@@ -3,3 +3,5 @@ psycopg2-binary>=2.9
 python-dotenv>=1.0
 rapidfuzz>=3.0
 requests>=2.31
+trafilatura>=2.0
+datasketch>=1.9

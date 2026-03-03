@@ -13,3 +13,8 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Database
+*.db
+*.db-shm
+*.db-wal

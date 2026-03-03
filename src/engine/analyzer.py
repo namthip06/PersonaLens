@@ -61,6 +61,7 @@ from src.schemas.inference import (  # noqa: E402
     ResolvedEntity,
 )
 from src.utils.prompts import load_prompt  # noqa: E402
+from database.database import Database  # noqa: E402
 
 if TYPE_CHECKING:
     pass
@@ -379,6 +380,12 @@ def run_analysis(
     model_name: str = "qwen2.5:7b",
     prompt_id: str = "absa_analysis",
     window: int = 1,
+    source_url: str | None = None,
+    headline: str | None = None,
+    publisher: str | None = None,
+    published_at: str | None = None,
+    save_to_db: bool = True,
+    db_path: str = "database/personalens.db",
 ) -> list[AnalyzerResult]:
     """
     Run Phase II analysis over *all* resolved entities from the entity linker.
@@ -386,6 +393,8 @@ def run_analysis(
     Skips unresolved entities (those with resolution_method == "unresolved")
     with a warning, but still analyses them if a canonical name is missing –
     the surface form is used as a fallback anchor.
+
+    If save_to_db is True, the AnalyzerResult will be persisted to the SQLite database.
 
     Parameters
     ----------
@@ -395,6 +404,12 @@ def run_analysis(
     model_name    : Ollama model tag (e.g. "qwen2.5:7b").
     prompt_id     : ABSA prompt YAML filename (without extension).
     window        : Sentence window radius (default 1 → i±1).
+    source_url    : Metadata for Database (URL of article).
+    headline      : Metadata for Database (Headline of article).
+    publisher     : Metadata for Database (Publisher of article).
+    published_at  : Metadata for Database (Publication date).
+    save_to_db    : Whether to save the result to sqlite database.
+    db_path       : Path to the SQLite DB.
 
     Returns
     -------
@@ -403,6 +418,8 @@ def run_analysis(
     t0 = time.monotonic()
     client = SLMClient(model=model_name)
     results: list[AnalyzerResult] = []
+
+    db = Database(path=db_path) if save_to_db else None
 
     entities = linker_result.resolved
     logger.info(
@@ -430,6 +447,25 @@ def run_analysis(
         )
         if result is not None:
             results.append(result)
+            if db is not None:
+                try:
+                    db.save_analyzer_result(
+                        result=result,
+                        source_url=source_url,
+                        headline=headline,
+                        publisher=publisher,
+                        lang=lang,
+                        published_at=published_at,
+                    )
+                    logger.debug(
+                        "Saved AnalyzerResult for '%s' to database.",
+                        entity.surface_form,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to save AnalyzerResult to database: %s", exc)
+
+    if db is not None:
+        db.close()
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
@@ -521,6 +557,7 @@ if __name__ == "__main__":
             linker_result=mock_linker_result,
             article_text=SAMPLE_TEXT,
             lang="th",
+            save_to_db=False,  # Skip DB write in smoke test
         )
         for ar in analysis_results:
             print(json.dumps(ar.model_dump(mode="json"), indent=2, ensure_ascii=False))

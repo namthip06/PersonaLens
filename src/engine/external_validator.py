@@ -8,7 +8,7 @@ DDGS text search) and feeds the top snippets to the SLM for resolution.
 
 Public function
 ---------------
-    validate_entity_external(entity, model_name, session=None, article_date=None)
+    validate_entity_external(entity, model_name, db=None, article_date="")
         → ResolvedEntity | None
 
 Pipeline (per entity)
@@ -16,17 +16,17 @@ Pipeline (per entity)
   ExtractedEntity (unresolved)
       │
       ▼
-  build_query(surface_form, entity_type)  ← category-aware, hard-coded English query
+  build_query(surface_form, entity_type)  ← category-aware English query
       │
       ▼
-  search_ddgs(query)  ← DDGS text search (duckduckgo-search library)
+  search_ddgs(query, surface_form)        ← DDGS text search
       │
       ▼
-  validate_with_slm(snippets, ..., model_name)  ← SLM reads snippets, returns canonical name
+  validate_with_slm(snippets, ...)        ← SLM reads snippets, returns canonical name
       │   schema: ExternalResolutionOutput
       ▼
-  write new Alias row to DB (if session provided and confidence ≥ threshold)
-      │
+  _upsert_entity_and_alias(db, ...)       ← write Entity + Alias to SQLite
+      │   only when db is provided and confidence ≥ CONFIDENCE_WRITE_THRESHOLD
       ▼
   ResolvedEntity (method="external_api")
 """
@@ -35,29 +35,26 @@ from __future__ import annotations
 
 import logging
 import sys
+import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Optional
+
 from ddgs import DDGS
 from langdetect import detect
-
-import uuid
 
 project_root = Path(__file__).resolve().parent.parent.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+from database import Database  # noqa: E402
+from src.engine.slm_client import SLMClient  # noqa: E402
 from src.schemas.inference import (  # noqa: E402
-    ExtractedEntity,
     EntityType,
+    ExtractedEntity,
     ExternalResolutionOutput,
     ResolvedEntity,
 )
 from src.utils.prompts import load_prompt  # noqa: E402
-from src.engine.slm_client import SLMClient  # noqa: E402
-from database.models import Alias, Entity  # noqa: E402
-
-if TYPE_CHECKING:
-    from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +63,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_MAX_RESULTS = 5
-CONFIDENCE_WRITE_THRESHOLD = 0.75  # min confidence to persist a new alias to DB
+
+# Minimum SLM confidence required to write a new alias to the DB.
+# Below this threshold the resolution is too uncertain to cache.
+CONFIDENCE_WRITE_THRESHOLD: float = 0.75
 
 # Mapping: ISO 639-1 language code → DDGS region code
 _LANG_TO_REGION: dict[str, str] = {
@@ -86,12 +86,20 @@ _LANG_TO_REGION: dict[str, str] = {
     "vi": "vn-vi",
 }
 
-# Mapping: entity_type → prompt template name (matches YAML filenames)
-PROMPT_MAP: dict[str, str] = {
+# Mapping: EntityType → prompt template YAML name
+PROMPT_MAP: dict[EntityType, str] = {
     EntityType.PER: "snippet_analysis_per",
     EntityType.ORG: "snippet_analysis_org",
     EntityType.LOC: "snippet_analysis_loc",
     EntityType.GPE: "snippet_analysis_gpe",
+}
+
+# EntityType → SQLite category string stored in entities.category
+_ENTITY_CATEGORY_MAP: dict[EntityType, str] = {
+    EntityType.PER: "PER",
+    EntityType.ORG: "ORG",
+    EntityType.LOC: "LOC",
+    EntityType.GPE: "GPE",
 }
 
 
@@ -105,13 +113,13 @@ def build_query(
     entity_type: EntityType,
 ) -> str:
     """
-    Build a globalized search query to find the canonical name/identity.
+    Build a globalised search query to find the canonical name/identity.
 
-    Strategy: Focus on "identity definition" rather than geographic location.
+    Strategy: focus on "identity definition" rather than geography.
 
     Parameters
     ----------
-    surface_form : The raw text span from the article.
+    surface_form : Raw text span from the article.
     entity_type  : PER | ORG | LOC | GPE
 
     Returns
@@ -124,7 +132,7 @@ def build_query(
         return f"who is {sf} full name and identity"
     elif entity_type == EntityType.ORG:
         return f"what is {sf} official name and organization details"
-    elif entity_type == EntityType.LOC or entity_type == EntityType.GPE:
+    elif entity_type in (EntityType.LOC, EntityType.GPE):
         return f"where is {sf} and its full official name"
 
     return f"what is {sf} and its actual name"
@@ -138,7 +146,7 @@ def build_query(
 def _detect_region(text: str) -> str:
     """
     Use langdetect to pick the best DDGS region code for the given text.
-    Falls back to 'wt-wt' (worldwide) if detection fails.
+    Falls back to ``"wt-wt"`` (worldwide) if detection fails.
     """
     try:
         lang = detect(text)
@@ -161,13 +169,14 @@ def search_ddgs(
     """
     Query DDGS text search and return a list of text snippets.
 
-    The region is auto-detected from the surface_form language using langdetect.
+    The region is auto-detected from the *surface_form* language using
+    langdetect so Thai queries are routed to the Thai DDGS index.
 
     Parameters
     ----------
     query        : Search query string.
     surface_form : Original entity text span (used for region detection).
-    max_results  : Maximum number of snippet strings to return.
+    max_results  : Maximum snippet strings to return.
 
     Returns
     -------
@@ -223,22 +232,19 @@ def validate_with_slm(
     Send search snippets to the SLM for identity confirmation.
     Uses a category-specific prompt template (per / org / loc / gpe).
 
-    A fresh SLMClient is instantiated inside this function using `model_name`.
-
     Parameters
     ----------
     snippets      : Text snippets from DDGS.
     surface_form  : Original entity text span.
-    entity_type   : PER | ORG | LOC | GPE – selects the right prompt template.
+    entity_type   : PER | ORG | LOC | GPE – selects the prompt template.
     context_clue  : Short context clue from NER.
-    model_name    : Ollama model tag, e.g. "qwen2.5:7b".
-    article_date  : Optional ISO date (passed to prompt but not used by LOC/GPE).
+    model_name    : Ollama model tag, e.g. ``"qwen2.5:7b"``.
+    article_date  : Optional ISO date forwarded to the prompt.
 
     Returns
     -------
-    ExternalResolutionOutput with canonical_name + confidence, or None on error.
+    ``ExternalResolutionOutput`` with canonical_name + confidence, or None.
     """
-
     if not snippets:
         logger.warning(
             "No snippets to analyse for '%s' – skipping SLM call", surface_form
@@ -246,7 +252,7 @@ def validate_with_slm(
         return None
 
     prompt_id = PROMPT_MAP.get(entity_type, "snippet_analysis_per")
-    print("prompt_id :", prompt_id)
+    logger.debug("Using prompt template: %s", prompt_id)
 
     try:
         prompt_data = load_prompt(prompt_id)
@@ -255,7 +261,6 @@ def validate_with_slm(
         return None
 
     system_prompt: str = prompt_data["templates"]["system"]
-
     user_template: str = prompt_data["templates"]["user"]
     snippets_text = "\n".join(f"[{i + 1}] {s}" for i, s in enumerate(snippets))
 
@@ -300,27 +305,29 @@ def validate_with_slm(
 def validate_entity_external(
     entity: ExtractedEntity,
     model_name: str,
-    session: "Session | None" = None,
+    db: Optional[Database] = None,
     article_date: str = "",
 ) -> ResolvedEntity | None:
     """
     Full Step 2.3 pipeline for a single entity:
-    build query → DDGS search → SLM analysis → optional DB write.
+    build query → DDGS search → SLM analysis → optional SQLite write.
 
-    If resolution confidence meets CONFIDENCE_WRITE_THRESHOLD and a DB
-    session is provided, a new `Alias` row is written so subsequent
-    occurrences hit the faster alias_exact path (Step 2.2).
+    If resolution confidence meets ``CONFIDENCE_WRITE_THRESHOLD`` and a
+    ``Database`` instance is provided, a new ``entities`` row (if needed)
+    and an ``aliases`` row are written so subsequent occurrences hit the
+    faster ``alias_exact`` path (Step 2.2).
 
     Parameters
     ----------
-    entity        : Unresolved ExtractedEntity from Step 2.1.
-    model_name    : Ollama model tag (e.g. "qwen2.5:7b").
-    session       : Optional SQLAlchemy session for DB writes.
-    article_date  : ISO-format date string (forwarded to the prompt template).
+    entity       : Unresolved ``ExtractedEntity`` from Step 2.1.
+    model_name   : Ollama model tag (e.g. ``"qwen2.5:7b"``).
+    db           : Optional open ``Database`` instance for DB writes.
+    article_date : ISO-format date string forwarded to the prompt template.
 
     Returns
     -------
-    ResolvedEntity (method="external_api") on success, None if unresolvable.
+    ``ResolvedEntity`` (method=``"external_api"``) on success, None if
+    unresolvable.
     """
     sf = entity.surface_form
     query = build_query(sf, entity.entity_type)
@@ -343,13 +350,12 @@ def validate_entity_external(
         )
         return None
 
-    # Attempt to find or create the entity in the DB
-    global_id = None
-    if session is not None:
+    # ── Persist to SQLite (optional) ─────────────────────────────────────────
+    global_id: Optional[uuid.UUID] = None
+    if db is not None:
         global_id = _upsert_entity_and_alias(
-            session=session,
+            db=db,
             canonical_name=resolution.canonical_name,
-            wikidata_id=resolution.wikidata_id,
             entity_type=entity.entity_type,
             surface_form=sf,
             confidence=resolution.confidence,
@@ -366,90 +372,86 @@ def validate_entity_external(
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Internal helper – SQLite upsert
 # ---------------------------------------------------------------------------
 
 
 def _upsert_entity_and_alias(
-    session: "Session",
+    db: Database,
     canonical_name: str,
-    wikidata_id: str | None,
     entity_type: EntityType,
     surface_form: str,
     confidence: float,
-) -> "uuid.UUID | None":
+) -> Optional[uuid.UUID]:
     """
-    Find or create the Entity row and write a new Alias row for the surface form.
-    Returns the entity_id (Global ID) on success, None on DB error.
+    Find or create the ``entities`` row for *canonical_name* and — when
+    *confidence* meets ``CONFIDENCE_WRITE_THRESHOLD`` — write a new
+    ``aliases`` row for *surface_form* so future lookups hit the fast
+    exact-match path.
+
+    Uses ``Database.upsert_entity()`` and ``Database.upsert_alias()``
+    which are both idempotent (INSERT OR IGNORE semantics).
+
+    Parameters
+    ----------
+    db             : An open ``Database`` instance.
+    canonical_name : Resolved canonical entity name from the SLM.
+    entity_type    : PER | ORG | LOC | GPE (mapped to category string).
+    surface_form   : Original surface form to register as an alias.
+    confidence     : SLM confidence score [0, 1].
+
+    Returns
+    -------
+    ``uuid.UUID`` of the entity row on success, ``None`` on error.
     """
     try:
-        # --- Find existing entity ---
-        entity_row = None
+        category = _ENTITY_CATEGORY_MAP.get(entity_type, "PER")
 
-        if wikidata_id:
-            entity_row = (
-                session.query(Entity).filter(Entity.wikidata_id == wikidata_id).first()
-            )
+        # Find or create entity (upsert_entity is idempotent on canonical_name)
+        entity_id_str = db.upsert_entity(
+            canonical_name=canonical_name,
+            category=category,
+            lang="th",
+        )
+        entity_uuid = uuid.UUID(entity_id_str)
+        logger.info(
+            "Entity in DB: '%s'  category=%s  entity_id=%s",
+            canonical_name,
+            category,
+            entity_uuid,
+        )
 
-        if entity_row is None:
-            entity_row = (
-                session.query(Entity)
-                .filter(Entity.canonical_name == canonical_name)
-                .first()
-            )
-
-        # --- Create if not found ---
-        if entity_row is None:
-            cat_map = {
-                EntityType.PER: "politician",
-                EntityType.ORG: "organization",
-                EntityType.LOC: "location",
-                EntityType.GPE: "geopolitical",
-            }
-            entity_row = Entity(
-                entity_id=uuid.uuid4(),
-                canonical_name=canonical_name,
-                category=cat_map.get(entity_type, "unknown"),
-                wikidata_id=wikidata_id or None,
-                lang="th",
-            )
-            session.add(entity_row)
-            session.flush()  # get entity_id without committing
-            logger.info(
-                "Created new entity: '%s' (id=%s)", canonical_name, entity_row.entity_id
-            )
-
-        # --- Write alias row if confidence is sufficient ---
+        # Write alias row only when confidence is sufficient
         if confidence >= CONFIDENCE_WRITE_THRESHOLD:
-            existing_alias = (
-                session.query(Alias)
-                .filter(
-                    Alias.entity_id == entity_row.entity_id,
-                    Alias.alias_text == surface_form,
-                )
-                .first()
+            db.upsert_alias(
+                entity_id=entity_id_str,
+                alias_text=surface_form,
+                source_type="external_api",
             )
-            if existing_alias is None:
-                new_alias = Alias(
-                    entity_id=entity_row.entity_id,
-                    alias_text=surface_form,
-                    source_type="external_api",
-                )
-                session.add(new_alias)
-                session.flush()
-                logger.info(
-                    "Persisted new alias: '%s' → entity '%s'",
-                    surface_form,
-                    canonical_name,
-                )
+            logger.info(
+                "Persisted alias '%s' → '%s'  (confidence=%.2f ≥ %.2f)",
+                surface_form,
+                canonical_name,
+                confidence,
+                CONFIDENCE_WRITE_THRESHOLD,
+            )
+        else:
+            logger.info(
+                "Alias NOT written for '%s' – confidence %.2f below threshold %.2f",
+                surface_form,
+                confidence,
+                CONFIDENCE_WRITE_THRESHOLD,
+            )
 
-        session.commit()
-        return entity_row.entity_id
+        return entity_uuid
 
     except Exception as exc:
-        logger.error("DB upsert failed for '%s': %s", canonical_name, exc)
-        if session:
-            session.rollback()
+        logger.error(
+            "SQLite upsert failed for entity '%s' / alias '%s': %s",
+            canonical_name,
+            surface_form,
+            exc,
+        )
         return None
 
 
@@ -458,7 +460,6 @@ def _upsert_entity_and_alias(
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import json
     import logging as _logging
 
     _logging.basicConfig(
@@ -467,11 +468,11 @@ if __name__ == "__main__":
     )
 
     MODEL = "qwen2.5:7b"
+    DB_PATH = project_root / "database" / "personalens.db"
 
-    # ------------------------------------------------------------------
-    # validate_with_slm – mock entity data
-    # ------------------------------------------------------------------
-    print("\n[3] validate_with_slm with mock entities (requires Ollama running):")
+    print("=" * 60)
+    print("PersonaLens – External Validator Smoke Test (SQLite)")
+    print("=" * 60)
 
     mock_entities_raw = [
         {
@@ -500,34 +501,53 @@ if __name__ == "__main__":
         ExtractedEntity(**e) for e in mock_entities_raw
     ]
 
-    for entity in mock_entities:
-        print(f"\n  ── Entity: '{entity.surface_form}' [{entity.entity_type.value}]")
-        query = build_query(entity.surface_form, entity.entity_type)
-        print(f"     Query   : {query!r}")
+    with Database(str(DB_PATH)) as db:
+        for entity in mock_entities:
+            print(
+                f"\n  ── Entity: '{entity.surface_form}' [{entity.entity_type.value}]"
+            )
+            query = build_query(entity.surface_form, entity.entity_type)
+            print(f"     Query   : {query!r}")
 
-        snippets = search_ddgs(query, entity.surface_form)
-        print(f"     Snippets: {len(snippets)} retrieved")
+            snippets = search_ddgs(query, entity.surface_form)
+            print(f"     Snippets: {len(snippets)} retrieved")
 
-        if not snippets:
-            print("     Result  : skipped (no snippets)")
-            continue
-        else:
+            if not snippets:
+                print("     Result  : skipped (no snippets)")
+                continue
+
             for i, snippet in enumerate(snippets, 1):
-                print(f"- Snippet {i}: {snippet}")
+                print(f"     [{i}] {snippet[:120]}")
 
-        result = validate_with_slm(
-            snippets=snippets,
-            surface_form=entity.surface_form,
-            entity_type=entity.entity_type,
-            context_clue=entity.context_clue,
-            model_name=MODEL,
-            article_date="2025-10-01",
-        )
+            result = validate_with_slm(
+                snippets=snippets,
+                surface_form=entity.surface_form,
+                entity_type=entity.entity_type,
+                context_clue=entity.context_clue,
+                model_name=MODEL,
+                article_date="2025-10-01",
+            )
 
-        if result:
-            print(f"     Result  : {result}")
-        else:
-            print("     Result  : None (SLM unavailable or inconclusive)")
+            if result:
+                print(
+                    f"     SLM     : {result.canonical_name!r}  conf={result.confidence:.2f}"
+                )
+
+                # Full pipeline with DB write
+                resolved = validate_entity_external(
+                    entity=entity,
+                    model_name=MODEL,
+                    db=db,
+                    article_date="2025-10-01",
+                )
+                if resolved:
+                    print(
+                        f"     Resolved: '{resolved.canonical_name}'"
+                        f"  global_id={resolved.global_id}"
+                        f"  conf={resolved.confidence_score:.4f}"
+                    )
+            else:
+                print("     Result  : None (SLM unavailable or inconclusive)")
 
     print("\n" + "=" * 60)
     print("Smoke test complete.")

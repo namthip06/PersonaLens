@@ -26,9 +26,6 @@ Pipeline
   [Step 2.3] external_validator.validate_entity_external()  ← DDG + SLM
       │
       ▼
-  [Step 2.4] disambiguator.score_candidates()    ← homonym keyword scoring
-      │
-      ▼
   EntityLinkerResult  ← envelope: list[ResolvedEntity] + metadata
 """
 
@@ -44,16 +41,13 @@ if str(project_root) not in sys.path:
 
 from src.engine.slm_client import SLMClient, SLMInferenceError  # noqa: E402
 from src.schemas.inference import (  # noqa: E402
-    ExtractedEntity,
     EntityLinkerResult,
     InferenceMetadata,
     NERInferenceResult,
     NEROutput,
-    EntityType,
     ResolvedEntity,
 )
 from src.utils.prompts import load_prompt  # noqa: E402
-from src.engine.disambiguator import assign_global_id  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -160,9 +154,6 @@ def resolve_all_entities(
     For each ExtractedEntity in `ner_result`, calls:
       1. alias_resolver.resolve_from_db()            (Step 2.2)
       2. external_validator.validate_entity_external() (Step 2.3)
-      3. disambiguator.score_candidates()             (Step 2.4 – homonyms)
-
-    via the `assign_global_id()` orchestrator in `disambiguator.py`.
 
     Parameters
     ----------
@@ -199,9 +190,6 @@ def resolve_all_entities(
 
     t0 = time.monotonic()
 
-    # Instantiate SLMClient internally – caller only needs to pass model_name
-    slm_client = SLMClient(model=model_name)
-
     resolved: list[ResolvedEntity] = []
     entities = ner_result.data.entities
 
@@ -211,24 +199,6 @@ def resolve_all_entities(
         "yes" if session else "no",
         model_name,
     )
-
-    for entity in entities:
-        resolved_entity = assign_global_id(
-            entity=entity,
-            article_context=article_context,
-            session=session,
-            slm_client=slm_client,
-            article_date=article_date,
-        )
-        resolved.append(resolved_entity)
-        logger.info(
-            "  '%s' → %s (id=%s, method=%s, confidence=%.2f)",
-            entity.surface_form,
-            resolved_entity.canonical_name or "UNRESOLVED",
-            resolved_entity.global_id or "—",
-            resolved_entity.resolution_method,
-            resolved_entity.confidence_score,
-        )
 
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(

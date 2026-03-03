@@ -42,7 +42,7 @@ To handle different names referring to the same person (e.g., "Sia Noo," "Anutin
 If the SLM encounters an unconfirmed or ambiguous entity (e.g., a new political nickname), it performs **Dynamic Verification**:
 
 * **Wikidata/Wikipedia API**: Queries structured data to see if *"Sia Noo"* is linked to the QID for *"Anutin Charnvirakul."*
-* **Google Search API (Serper/Custom Search)**: In cases of breaking news or recent nicknames, the system analyzes top search snippets to determine who the media is currently referring to by that name.
+* **Search API (DuckDuckGo)**: In cases of breaking news or recent nicknames, the system analyzes top search snippets to determine who the media is currently referring to by that name.
 * **Cross-Referencing**: Validates the search results against other context clues in the article, such as political party or current office.
 
 #### **Step 2.4: Disambiguation & Global ID Assignment**
@@ -58,8 +58,6 @@ If the SLM encounters an unconfirmed or ambiguous entity (e.g., a new political 
 | **"Sia Noo"** | Wiki/Search confirms this is a common alias for Anutin. | Anutin Charnvirakul (ID: P-001) |
 | **"Minister of Interior"** | Cross-references the current office holder on the news date. | Anutin Charnvirakul (ID: P-001) |
 | **"Anutinn"** | Fuzzy Matching + Context Match for typo correction. | Anutin Charnvirakul (ID: P-001) |
-
-
 
 
 Here is the sequence diagram illustrating the **Entity Intelligence** workflow, from the initial news ingestion to the final Global ID assignment.

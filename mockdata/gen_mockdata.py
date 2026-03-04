@@ -92,7 +92,27 @@ def main():
     print("Generating mock data...")
 
     with Database(db_path) as db:
-        # Generate 500 mock entries
+        # Generate some aliases for entities beforehand
+        for ent in entities:
+            ent_id_str = db.upsert_entity(
+                canonical_name=ent["name"],
+                category=ent["type"],
+                lang="en",  # default mock lang
+            )
+            # Generate 1 to 4 aliases for each entity
+            num_aliases = random.randint(1, 4)
+            for j in range(num_aliases):
+                source_type = random.choices(
+                    ["manual", "slm", "api"], weights=[0.2, 0.5, 0.3]
+                )[0]
+                alias_text = f"{ent['surface']} (alias {j})"
+                db.upsert_alias(
+                    entity_id=ent_id_str,
+                    alias_text=alias_text,
+                    source_type=source_type,
+                )
+
+        # Generate 500 mock articles
         for i in range(500):
             # Patch time
             dt = random_date(start_date, end_date)
@@ -100,51 +120,69 @@ def main():
 
             lang = random.choice(langs)
             pub = random.choice(publishers)
-            ent = random.choice(entities)
-            sentiment_val = random.choice(list(SentimentLabel))
 
-            ent_id_str = db.upsert_entity(
-                canonical_name=ent["name"],
-                category=ent["type"],
-                lang=lang,
-            )
-            ent_uuid = uuid.UUID(ent_id_str)
+            article_url = f"https://mocknews.local/articles/{uuid.uuid4()}"
+            headline = f"Mock headline {i}"
+            is_headline_val = random.choice([True, False])
 
-            absa_out = ABSAOutput(
-                speaker_type=SpeakerType.REPORTER,
-                speaker_name=None,
-                is_aimed_at_target=True,
-                targeting_keywords=["mock"],
-                sentiment=sentiment_val,
-                aspects=["general"],
-                rationale=random.choice(reasons),
-            )
+            # Select 1 to 3 distinct entities per article to generate co-occurrence network
+            num_entities = random.randint(1, 3)
+            article_entities = random.sample(entities, num_entities)
 
-            meta = InferenceMetadata(
-                prompt_id="mock-prompt-v1",
-                model="mock-slm",
-                duration_ms=random.randint(100, 500),
-            )
+            for ent in article_entities:
+                sentiment_val = random.choice(list(SentimentLabel))
 
-            result = AnalyzerResult(
-                surface_form=ent["surface"],
-                canonical_name=ent["name"],
-                global_id=ent_uuid,  # enforce assigned category
-                context_window=f"This is a mock sentence in {lang} mentioning {ent['surface']}.",
-                absa=absa_out,
-                metadata=meta,
-            )
+                ent_id_str = db.upsert_entity(
+                    canonical_name=ent["name"],
+                    category=ent["type"],
+                    lang=lang,
+                )
+                ent_uuid = uuid.UUID(ent_id_str)
 
-            db.save_analyzer_result(
-                result=result,
-                source_url=f"https://mocknews.local/articles/{uuid.uuid4()}",
-                headline=f"Mock headline {i}",
-                publisher=pub,
-                lang=lang,
-                published_at=dt.isoformat(),
-                is_headline=random.choice([True, False]),
-                confidence_score=round(random.uniform(0.0, 1.0), 2),
-            )
+                # ~30% chance to be a quote from another Person entity
+                is_quote = random.random() < 0.3
+                if is_quote:
+                    spk_type = SpeakerType.QUOTE
+                    spk_name = random.choice(per_names)
+                else:
+                    spk_type = SpeakerType.REPORTER
+                    spk_name = None
+
+                absa_out = ABSAOutput(
+                    speaker_type=spk_type,
+                    speaker_name=spk_name,
+                    is_aimed_at_target=True,
+                    targeting_keywords=["mock"],
+                    sentiment=sentiment_val,
+                    aspects=["general"],
+                    rationale=random.choice(reasons),
+                )
+
+                meta = InferenceMetadata(
+                    prompt_id="mock-prompt-v1",
+                    model="mock-slm",
+                    duration_ms=random.randint(100, 500),
+                )
+
+                result = AnalyzerResult(
+                    surface_form=ent["surface"],
+                    canonical_name=ent["name"],
+                    global_id=ent_uuid,  # enforce assigned category
+                    context_window=f"This is a mock sentence in {lang} mentioning {ent['surface']}.",
+                    absa=absa_out,
+                    metadata=meta,
+                )
+
+                db.save_analyzer_result(
+                    result=result,
+                    source_url=article_url,
+                    headline=headline,
+                    publisher=pub,
+                    lang=lang,
+                    published_at=dt.isoformat(),
+                    is_headline=is_headline_val,
+                    confidence_score=round(random.uniform(0.0, 1.0), 2),
+                )
 
     print("Mock data generated successfully in the database!")
 

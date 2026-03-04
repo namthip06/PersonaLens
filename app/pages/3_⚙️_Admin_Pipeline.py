@@ -216,7 +216,7 @@ else:
         default_index = 0
 
     selected_model_global = st.selectbox(
-        "🧠 Select Language Model",
+        "Select Language Model",
         options=avail_models,
         index=default_index,
         help="Select the SLM to be used for entity linking and sentiment analysis.",

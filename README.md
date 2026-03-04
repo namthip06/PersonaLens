@@ -2,6 +2,8 @@
 
 PersonaLens is an AI-powered sentiment intelligence engine that extracts, resolves, and analyzes how public figures are portrayed in unstructured news media using Small Language Models (SLMs).
 
+![Test](images/Test.gif)
+
 ## Table of Contents
 - [Overview](#overview)
 - [Design Boundary](#design-boundary)
@@ -77,11 +79,11 @@ uv run streamlit run app/app.py
 *(Insert screenshots of your application here)*
 
 - **Executive Dashboard:**
-  `![Dashboard Screenshot Placeholder](docs/images/dashboard.png)`
+  ![Dashboard Screenshot Placeholder](images/dashboard.png)
 - **Entity Deep-Dive:**
-  `![Deep-Dive Screenshot Placeholder](docs/images/deepdive.png)`
+  ![Deep-Dive Screenshot Placeholder](images/deepdive.png)
 - **Real-Time Admin Pipeline:**
-  `![Pipeline Screenshot Placeholder](docs/images/pipeline.png)`
+  ![Pipeline Screenshot Placeholder](images/pipeline.png)
 
 ## Modules
 

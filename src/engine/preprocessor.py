@@ -521,37 +521,43 @@ if __name__ == "__main__":
     preprocessor = ArticlePreprocessor(db, replace_dates=True, replace_numbers=False)
 
     # ── Test 1: plain body ────────────────────────────────────────────────────
-    sample = NewsArticle(
-        source_url="https://example.com/news/1",
-        body=(
-            "อนุทิน ชาญวีรกูล เดินทางเยี่ยมชมพื้นที่น้ำท่วมภาคเหนือเมื่อวันที่ 5 มีนาคม 2567 "
-            "โดยสั่งการให้หน่วยงานที่เกี่ยวข้องเร่งแก้ไขปัญหาน้ำท่วมอย่างเร่งด่วน "
-            "พร้อมอนุมัติงบประมาณกว่า 500 ล้านบาทเพื่อฟื้นฟูพื้นที่ได้รับผลกระทบ"
-        ),
-        headline="อนุทินเยี่ยมพื้นที่น้ำท่วม",
-        publisher="Thai News Agency",
-        lang="th",
-    )
-    result = preprocessor.ingest(sample)
-    print(f"\nTest 1 – ingest plain body: {result}")
+    # sample = NewsArticle(
+    #     source_url="https://example.com/news/1",
+    #     body=(
+    #         "อนุทิน ชาญวีรกูล เดินทางเยี่ยมชมพื้นที่น้ำท่วมภาคเหนือเมื่อวันที่ 5 มีนาคม 2567 "
+    #         "โดยสั่งการให้หน่วยงานที่เกี่ยวข้องเร่งแก้ไขปัญหาน้ำท่วมอย่างเร่งด่วน "
+    #         "พร้อมอนุมัติงบประมาณกว่า 500 ล้านบาทเพื่อฟื้นฟูพื้นที่ได้รับผลกระทบ"
+    #     ),
+    #     headline="อนุทินเยี่ยมพื้นที่น้ำท่วม",
+    #     publisher="Thai News Agency",
+    #     lang="th",
+    # )
+    # result = preprocessor.ingest(sample)
+    # print(f"\nTest 1 – ingest plain body: {result}")
 
-    # ── Test 2: near-duplicate (same body, different URL) ─────────────────────
-    duplicate = NewsArticle(
-        source_url="https://mirror.example.com/news/1",
-        body=sample.body,  # identical body → should be flagged as duplicate
-        lang="th",
-    )
-    result2 = preprocessor.ingest(duplicate)
-    print(f"Test 2 – near-duplicate detection: {result2}  (should be None)")
+    # # ── Test 2: near-duplicate (same body, different URL) ─────────────────────
+    # duplicate = NewsArticle(
+    #     source_url="https://mirror.example.com/news/1",
+    #     body=sample.body,  # identical body → should be flagged as duplicate
+    #     lang="th",
+    # )
+    # result2 = preprocessor.ingest(duplicate)
+    # print(f"Test 2 – near-duplicate detection: {result2}  (should be None)")
 
-    # ── Test 3: clean_text demo ───────────────────────────────────────────────
-    raw = "ราคาน้ำมันดิบอยู่ที่ 85.50 USD/barrel วันที่ 03/03/2025  ลดลง 2.3%"
-    cleaned_with_num = clean_text(raw, replace_dates=True, replace_numbers=True)
-    cleaned_no_num = clean_text(raw, replace_dates=True, replace_numbers=False)
-    print("\nTest 3 – clean_text:")
-    print(f"  raw            : {raw}")
-    print(f"  dates+nums     : {cleaned_with_num}")
-    print(f"  dates only     : {cleaned_no_num}")
+    # # ── Test 3: clean_text demo ───────────────────────────────────────────────
+    # raw = "ราคาน้ำมันดิบอยู่ที่ 85.50 USD/barrel วันที่ 03/03/2025  ลดลง 2.3%"
+    # cleaned_with_num = clean_text(raw, replace_dates=True, replace_numbers=True)
+    # cleaned_no_num = clean_text(raw, replace_dates=True, replace_numbers=False)
+    # print("\nTest 3 – clean_text:")
+    # print(f"  raw            : {raw}")
+    # print(f"  dates+nums     : {cleaned_with_num}")
+    # print(f"  dates only     : {cleaned_no_num}")
+
+    data = fetch_and_extract("https://www.bbc.com/news/articles/cy7jm7k7pxzo")
+    print("body:", data["body"])
+    print("headline:", data["headline"])
+    print("publisher:", data["publisher"])
+    print("published_at:", data["published_at"])
 
     print("\nSession stats:", preprocessor.stats)
     db.close()

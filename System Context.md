@@ -12,7 +12,8 @@ The architecture is divided into modular components that handle the end-to-end p
 - **Responsibility**: Fetching raw news articles, cleaning text, and storing unique records.
 - **Key Modules**:
   - **Data Acquisition**: Website scrapers and parsers (e.g., Trafilatura) for extracting text and metadata from news URLs.
-  - **Text Normalization**: Unicode normalization, stripping HTML, and language-specific whitespace correction.
+  - **Text Normalization**: Unicode normalization, stripping HTML, and language-spe
+cific whitespace correction.
   - **Deduplication Engine**: An index logic to detect and block near-duplicate articles before storage.
   - **Storage Manager**: Relational database operations to persist cleaned articles.
 

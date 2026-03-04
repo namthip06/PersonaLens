@@ -292,17 +292,19 @@ def resolve_from_db(
 
 if __name__ == "__main__":
     import logging as _logging
+    from src.schemas.inference import EntityType, ExtractedEntity
 
+    # 1. Setup Logging
     _logging.basicConfig(
-        level=_logging.DEBUG,
-        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        level=_logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
     )
 
     DB_PATH = project_root / "database" / "personalens.db"
 
-    print("=" * 60)
-    print("PersonaLens – Alias Resolver Smoke Test (SQLite)")
-    print("=" * 60)
+    print("\n" + "=" * 80)
+    print(f"{'PersonaLens Alias Resolver Pipeline Test':^80}")
+    print("=" * 80)
 
     # ── Heuristic check ───────────────────────────────────────────────────────
     test_cases = [
@@ -311,13 +313,12 @@ if __name__ == "__main__":
         "ภาคเหนือ",  # LOC – no flag
         "พรรคภูมิใจไทย",  # ORG – no flag
     ]
-    print("\nHeuristic trigger check (is_likely_alias):")
+    print("\n🚀 Running Heuristic trigger check (is_likely_alias)...")
     for tc in test_cases:
         flag = is_likely_alias(tc)
-        print(f"  {'✓' if flag else '✗'}  '{tc}'")
+        print(f"  {'✅' if flag else '❌'}  [{tc}]")
 
-    # ── DB-backed resolution test ─────────────────────────────────────────────
-    print("\nDB-backed resolution test:")
+    print("\n🚀 Running [Step 2.2]: DB-backed Entity Resolution...")
 
     with Database(str(DB_PATH)) as db:
         # Seed a known entity + several aliases for testing
@@ -331,30 +332,37 @@ if __name__ == "__main__":
 
         # Test surfaces to resolve
         surfaces = [
-            ("อนุทิน", "PER"),  # exact hit expected
-            ("เสี่ยหนู", "PER"),  # exact hit (alias)
-            ("Anutn", "PER"),  # fuzzy hit expected (typo)
-            ("พรรคภูมิใจไทย", "ORG"),  # exact hit
-            ("ภูมิใจไท", "ORG"),  # fuzzy hit (truncated)
-            ("สมศักดิ์", "PER"),  # no match → None expected
+            ("อนุทิน", EntityType.PER),  # exact hit expected
+            ("เสี่ยหนู", EntityType.PER),  # exact hit (alias)
+            ("Anutn", EntityType.PER),  # fuzzy hit expected (typo)
+            ("พรรคภูมิใจไทย", EntityType.ORG),  # exact hit
+            ("ภูมิใจไท", EntityType.ORG),  # fuzzy hit (truncated)
+            ("สมศักดิ์", EntityType.PER),  # no match → None expected
         ]
 
-        from src.schemas.inference import EntityType, ExtractedEntity
+        print("\n" + "-" * 80)
+        print(f"{'FINAL RESOLVED ENTITIES (Step 2.2)':^80}")
+        print("-" * 80)
 
-        _type_map = {"PER": EntityType.PER, "ORG": EntityType.ORG}
-
-        for sf, etype in surfaces:
+        for idx, (sf, etype) in enumerate(surfaces, 1):
             entity = ExtractedEntity(
                 surface_form=sf,
-                entity_type=_type_map[etype],
+                entity_type=etype,
                 context_clue="smoke test",
             )
             result = resolve_from_db(entity, db)
             if result:
+                status = "✅" if result.is_resolved else "❓"
                 print(
-                    f"  [{result.resolution_method:12s}]  '{sf}'"
-                    f"  →  '{result.canonical_name}'"
-                    f"  (conf={result.confidence_score:.4f})"
+                    f"{idx}. {status} [{result.surface_form}] -> {result.canonical_name or 'Unresolved'}"
                 )
+                print(
+                    f"   Method: {result.resolution_method} | Confidence: {result.confidence_score:.2f}"
+                )
+                print(f"   ID:     {result.global_id}\n")
             else:
-                print(f"  [unresolved   ]  '{sf}'  →  None")
+                print(f"{idx}. ❓ [{sf}] -> Unresolved (Not found in DB)")
+                print("   Escalating to Step 2.3...\n")
+
+        print("\n" + "=" * 80)
+        print("Smoke test complete.")

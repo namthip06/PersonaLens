@@ -68,67 +68,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Lazy singletons for sentence segmenters (loaded only on first use)
-# ---------------------------------------------------------------------------
-
-_thai_segmentor = None  # pythainlp.tokenize.thaisumcut.ThaiSentenceSegmentor
-_spacy_nlp = None  # spacy Language (en_core_web_sm)
-
-
-def _get_thai_segmentor():
-    """Return (and cache) a ThaiSentenceSegmentor instance."""
-    global _thai_segmentor
-    if _thai_segmentor is None:
-        try:
-            from pythainlp.tokenize.thaisumcut import ThaiSentenceSegmentor
-
-            _thai_segmentor = ThaiSentenceSegmentor()
-            logger.info("ThaiSentenceSegmentor loaded.")
-        except ImportError as exc:
-            raise ImportError(
-                "PyThaiNLP is required for Thai sentence segmentation. "
-                "Install it with: pip install pythainlp"
-            ) from exc
-    return _thai_segmentor
-
-
-def _get_spacy_nlp():
-    """
-    Return (and cache) a spaCy English pipeline (en_core_web_sm).
-
-    On the first call, if ``en_core_web_sm`` is not yet installed the function
-    automatically downloads it via ``spacy.cli.download`` (no manual step
-    required).  Subsequent calls reuse the cached model.
-    """
-    global _spacy_nlp
-    if _spacy_nlp is None:
-        try:
-            import spacy
-        except ImportError as exc:
-            raise ImportError(
-                "spaCy is required for English sentence segmentation. "
-                "Install it with: uv pip install spacy"
-            ) from exc
-
-        def _load():
-            return spacy.load("en_core_web_sm")
-
-        try:
-            _spacy_nlp = _load()
-            logger.info("spaCy en_core_web_sm loaded.")
-        except OSError:
-            # Model not present – download it once, then reload
-            logger.info(
-                "spaCy model 'en_core_web_sm' not found – downloading (first run only) …"
-            )
-            from spacy.cli import download as spacy_download
-
-            spacy_download("en_core_web_sm")
-            _spacy_nlp = _load()
-            logger.info("spaCy en_core_web_sm downloaded and loaded.")
-    return _spacy_nlp
-
 
 # ---------------------------------------------------------------------------
 # Step 3.1: Context Windowing
@@ -138,70 +77,55 @@ def _get_spacy_nlp():
 def chunk_context_window(
     text: str,
     target_surface: str,
-    lang: str = "th",
+    lang: str,
     window: int = 1,
 ) -> str:
     """
-    Segment *text* into sentences and return the sentence that contains
-    *target_surface* together with *window* sentences on each side.
+    Extract a text window around the target based on character counts instead of
+    heavy sentence-segmentation NLP models.
 
     Parameters
     ----------
-    text           : Full article body (or any multi-sentence text).
+    text           : Full article body.
     target_surface : The exact surface form to locate (e.g. "อนุทิน").
-    lang           : Language code. "th" uses PyThaiNLP; anything else uses spaCy.
-    window         : Number of surrounding sentences to include (default 1 → i±1).
+    lang           : Language code (kept for API compatibility).
+    window         : Number of 'pseudo-sentences' to include on each side (default 1).
 
     Returns
     -------
-    A single string containing the target sentence plus its neighbours,
-    joined by a space.  If the target is not found, the full text is returned
-    as a fallback (with a warning).
+    A single string containing the target and its surrounding context up to the
+    calculated character bounds. If the target is not found, the full text is
+    returned as a fallback.
 
     Notes
     -----
-    Thai sentence boundary detection uses PyThaiNLP's ThaiSentenceSegmentor
-    (crfcut / thaisumcut engine).  English uses spaCy's en_core_web_sm model.
-    Both segmenters are loaded lazily and cached for the lifetime of the process.
+    Uses an average of 150 characters per sentence.
     """
     if not text or not target_surface:
         return text
 
-    # ── Sentence segmentation ────────────────────────────────────────────────
-    if lang == "th":
-        segmentor = _get_thai_segmentor()
-        sentences: list[str] = segmentor.split_into_sentences(text)
-    else:
-        nlp = _get_spacy_nlp()
-        doc = nlp(text)
-        sentences = [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    target_idx = text.find(target_surface)
 
-    if not sentences:
-        logger.warning("Sentence segmentation returned no sentences; using full text.")
-        return text
-
-    # ── Find the target sentence ─────────────────────────────────────────────
-    target_idx: int | None = None
-    for idx, sent in enumerate(sentences):
-        if target_surface in sent:
-            target_idx = idx
-            break
-
-    if target_idx is None:
+    if target_idx == -1:
         logger.warning(
-            "Target '%s' not found in any sentence; returning full text as fallback.",
+            "Target '%s' not found in text; returning full text as fallback.",
             target_surface,
         )
         return text
 
-    # ── Extract i±window slice ───────────────────────────────────────────────
-    start = max(0, target_idx - window)
-    end = min(len(sentences), target_idx + window + 1)
-    context_sentences = sentences[start:end]
+    # Estimate ~150 chars per sentence.
+    # window=1 means 1 surrounding sentence on each side + current sentence = ~3 sentences total.
+    # We pad each side by (window + 0.5) * 150 chars to approximate this mathematically.
+    chars_per_sentence = 600
+    padding = int(chars_per_sentence * (window + 0.5))
 
-    result = " ".join(s.strip() for s in context_sentences if s.strip())
+    start = max(0, target_idx - padding)
+    end = min(len(text), target_idx + len(target_surface) + padding)
+
+    result = text[start:end].strip()
+
     logger.debug(
-        "Context window for '%s': sentences[%d:%d] → %d chars",
+        "Context window for '%s': text[%d:%d] → %d chars",
         target_surface,
         start,
         end,
@@ -499,12 +423,14 @@ if __name__ == "__main__":
     )
 
     # ── Mock article ─────────────────────────────────────────────────────────
-    SAMPLE_TEXT = (
-        "นายอนุทิน ชาญวีรกูล หรือ เสี่ยหนู รองนายกรัฐมนตรีและรัฐมนตรีว่าการกระทรวงมหาดไทย "
-        "ในฐานะหัวหน้าพรรคภูมิใจไทย ลงพื้นที่ตรวจสอบสถานการณ์น้ำท่วมในภาคเหนือ "
-        "นักวิเคราะห์ระบุว่านโยบายของอนุทินล้มเหลวในการแก้ปัญหาน้ำท่วมอย่างยั่งยืน "
-        "พร้อมสั่งการให้หน่วยงานที่เกี่ยวข้องเร่งแก้ไขปัญหาโดยด่วน"
-    )
+    SAMPLE_TEXT = """
+        นายอนุทิน ชาญวีรกูล (หรือที่รู้จักกันในนาม **เสี่ยหนู**) รองนายกรัฐมนตรีและรัฐมนตรีว่าการกระทรวงมหาดไทย ในฐานะหัวหน้า**พรรคภูมิใจไทย** พร้อมด้วยคณะทำงานชุดใหญ่ เดินทางลงพื้นที่อำเภอแม่สาย จังหวัดเชียงราย เพื่อติดตามสถานการณ์อุทกภัยและดินโคลนถล่มอย่างใกล้ชิด โดยนายอนุทินได้ร่วมประชุมกับผู้ว่าราชการจังหวัดเชียงรายและหน่วยงานป้องกันและบรรเทาสาธารณภัย (ปภ.) เพื่อประเมินความเสียหายที่เกิดขึ้นในเขตเทศบาลตำบลแม่สาย ซึ่งถือเป็นจุดที่ได้รับผลกระทบหนักที่สุดในรอบ 30 ปี
+        ในระหว่างการลงพื้นที่ นายอนุทินได้ประกาศมาตรการเร่งด่วนในการเยียวยาผู้ประสบภัย โดยระบุว่า "กระทรวงมหาดไทยได้เตรียมงบกลางกรณีฉุกเฉินเพื่อชดเชยค่าล้างดินโคลนให้กับครัวเรือนละ 10,000 บาท และสั่งการให้การไฟฟ้าส่วนภูมิภาค (กฟภ.) พิจารณางดเว้นค่าไฟในเดือนที่เกิดวิกฤตหนัก" พร้อมกำชับให้เจ้าหน้าที่รัฐเร่งสำรวจรายชื่อผู้ตกหล่นโดยด่วนที่สุด อย่างไรก็ตาม ท่ามกลางเสียงขอบคุณจากชาวบ้าน กลับมีกระแสวิพากษ์วิจารณ์อย่างหนักจากฝ่ายวิชาการและภาคประชาสังคม
+        **ดร.สมชาย ปรีชาชาญ** นักวิเคราะห์นโยบายสาธารณะจากมหาวิทยาลัยชื่อดัง ได้ให้ความเห็นว่า "แม้การลงพื้นที่ของนายอนุทินจะแสดงถึงความรวดเร็วในการแก้ปัญหาเฉพาะหน้า แต่หากมองในเชิงโครงสร้าง นโยบายจัดการน้ำของอนุทินและรัฐบาลชุดปัจจุบันถือว่าล้มเหลวอย่างสิ้นเชิงในการสร้างระบบป้องกันน้ำท่วมอย่างยั่งยืน" ดร.สมชายระบุเพิ่มเติมว่า งบประมาณส่วนใหญ่ถูกนำไปใช้กับการเยียวยาหลังเกิดเหตุ (Reactive) มากกว่าการลงทุนในระบบพยากรณ์อากาศและเขื่อนกั้นน้ำที่มีประสิทธิภาพ (Proactive) ซึ่งส่งผลให้ประเทศไทยต้องเผชิญกับวงจรอุบาทว์น้ำท่วมซ้ำซากทุกปี
+        นอกจากนี้ สถานการณ์ทางการเมืองรอบข้างยังส่งผลให้การลงพื้นที่ครั้งนี้ถูกจับตามองเป็นพิเศษ มีรายงานว่าสมาชิก**พรรคเพื่อไทย**บางกลุ่มเริ่มแสดงความไม่พอใจต่อการบริหารงานของกระทรวงมหาดไทย โดยเฉพาะประเด็นการจัดซื้อเครื่องจักรกลสาธารณภัยที่ล่าช้า ในขณะที่ทางด้าน**พรรคประชาชน** (อดีตก้าวไกล) ได้เตรียมยื่นกระทู้ถามสดในสภาผู้แทนราษฎร เพื่อขอคำชี้แจงเกี่ยวกับแผนยุทธศาสตร์บริหารจัดการน้ำแห่งชาติ (พ.ศ. 2561 - 2580) ที่ดูเหมือนจะเดินหน้าไปได้ไม่ถึงครึ่งทาง
+        นายอนุทินตอบโต้ข้อวิจารณ์ดังกล่าวด้วยท่าทีที่เคร่งขรึมว่า "การพูดวิจารณ์จากห้องแอร์นั้นง่าย แต่การทำงานท่ามกลางโคลนและน้ำตาของประชาชนนั้นต่างกัน ผมยินดีรับฟังทุกความเห็นที่สร้างสรรค์ แต่ขอให้มองความเป็นจริงด้วยว่านี่คือภัยธรรมชาติที่รุนแรงเกินกว่าที่ใครจะคาดคิด" ทั้งนี้ นายอนุทินมีกำหนดการจะเดินทางต่อไปยังจังหวัดแพร่และน่านในช่วงสุดสัปดาห์นี้ เพื่อตรวจเยี่ยมแผนการระบายน้ำสู่ลุ่มแม่น้ำเจ้าพระยา ซึ่งเป็นจุดยุทธศาสตร์สำคัญที่ส่งผลกระทบต่อพื้นที่กรุงเทพมหานครและปริมณฑล
+        ในส่วนของภาคเอกชน **สภาหอการค้าแห่งประเทศไทย** ประเมินเบื้องต้นว่าความเสียหายในภาคเหนือครั้งนี้อาจสูงถึง 5,000 ล้านบาท ส่งผลกระทบต่อภาคการท่องเที่ยวที่กำลังจะเข้าสู่ช่วง High Season อย่างมีนัยสำคัญ บรรดานักธุรกิจในพื้นที่จึงเรียกร้องให้รัฐบาลจัดทำ "สมุดปกขาว" (White Paper) เพื่อกำหนดแนวทางแก้ปัญหาน้ำท่วมลุ่มน้ำโขงร่วมกับประเทศเพื่อนบ้านอย่างจริงจังเสียที
+        """
 
     # ── Mock EntityLinkerResult (two entities) ───────────────────────────────
     mock_linker_result = EntityLinkerResult(

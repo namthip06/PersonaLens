@@ -48,6 +48,7 @@ from src.schemas.inference import (  # noqa: E402
     ResolvedEntity,
 )
 from src.utils.prompts import load_prompt  # noqa: E402
+from src.engine import alias_resolver, external_validator  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,34 @@ def resolve_all_entities(
         model_name,
     )
 
+    for entity in entities:
+        res = None
+
+        # Step 2.2: resolve_from_db
+        if session:
+            res = alias_resolver.resolve_from_db(entity, db=session)
+
+        # Step 2.3: validate_entity_external
+        if not res:
+            res = external_validator.validate_entity_external(
+                entity=entity,
+                model_name=model_name,
+                db=session,
+                article_date=article_date,
+            )
+
+        if not res:
+            res = ResolvedEntity(
+                surface_form=entity.surface_form,
+                entity_type=entity.entity_type,
+                global_id=None,
+                canonical_name=None,
+                confidence_score=0.0,
+                resolution_method="unresolved",
+            )
+
+        resolved.append(res)
+
     elapsed_ms = int((time.monotonic() - t0) * 1000)
     logger.info(
         "Resolution complete: %d/%d resolved in %dms",
@@ -221,35 +250,70 @@ def resolve_all_entities(
 if __name__ == "__main__":
     import json
     import logging as _logging
+    from database import Database
 
+    # 1. Setup Logging to see the Step 2.1 -> 2.3 transitions
     _logging.basicConfig(
         level=_logging.INFO,
-        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        format="%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
     )
 
-    # Sample Thai political news article fragment
+    DB_PATH = project_root / "database" / "personalens.db"
+
+    # 2. Input Data
     SAMPLE_TEXT = (
         "นายอนุทิน ชาญวีรกูล หรือ เสี่ยหนู รองนายกรัฐมนตรีและรัฐมนตรีว่าการกระทรวงมหาดไทย "
-        "ในฐานะหัวหน้าพรรคภูมิใจไทย ลงพื้นที่ตรวจสอบสถานการณ์น้ำท่วมในภาคเหนือ "
-        "พร้อมสั่งการให้หน่วยงานที่เกี่ยวข้องเร่งแก้ไขปัญหาโดยด่วน"
+        "ในฐานะหัวหน้าพรรคภูมิใจไทย ลงพื้นที่ตรวจสอบสถานการณ์น้ำท่วมในภาคเหนือ"
     )
+    CURRENT_DATE = "2024-05-20"  # Important for Step 2.3 validation
+    MODEL = "qwen2.5:7b"
 
-    print("=" * 60)
-    print("PersonaLens – Entity Linker Full Pipeline Test")
-    print("=" * 60)
-    print(f"Input text ({len(SAMPLE_TEXT)} chars):\n  {SAMPLE_TEXT}\n")
+    print("\n" + "=" * 80)
+    print(f"{'PersonaLens Entity Linking Pipeline Test':^80}")
+    print("=" * 80)
+    print(f"Input Text: {SAMPLE_TEXT}\n")
 
-    # ── Step 2.1: NER extraction ────────────────────────────────────────────
-    print("[Step 2.1] SLM-based NER extraction...")
+    # ── [STEP 2.1] NER EXTRACTION ──
+    print(f"🚀 Running [Step 2.1]: NER Extraction using {MODEL}...")
     ner_result = extract_entities_with_slm(
-        text=SAMPLE_TEXT,
-        prompt_id="ner_v1",
+        text=SAMPLE_TEXT, model_name=MODEL, prompt_id="ner_v1"
     )
 
-    if ner_result is None:
-        print("NER returned None – check Ollama is running (ollama serve)")
+    if not ner_result:
+        print("❌ NER Step failed. Ensure Ollama is running and model is pulled.")
     else:
-        print(f"\nFound {len(ner_result.data.entities)} entities:")
+        print(f"✅ Found {len(ner_result.data.entities)} entities.")
+
+        # ── [STEP 2.2 & 2.3] ENTITY RESOLUTION ──
+        print(f"\n🚀 Running [Step 2.2 -> 2.4]: Entity Resolution...")
+        # Note: session=None will skip Step 2.2 (DB) and go straight to Step 2.3 (External/AI)
+        with Database(str(DB_PATH)) as db_session:
+            final_result = resolve_all_entities(
+                ner_result=ner_result,
+                article_context=SAMPLE_TEXT,
+                session=db_session,
+                model_name=MODEL,
+                article_date=CURRENT_DATE,
+            )
+
+        # ── DISPLAY FINAL RESULTS ──
+        print("\n" + "-" * 80)
+        print(f"{'FINAL RESOLVED ENTITIES':^80}")
+        print("-" * 80)
+
+        for idx, res in enumerate(final_result.resolved, 1):
+            status = "✅" if res.is_resolved else "❓"
+            print(
+                f"{idx}. {status} [{res.surface_form}] -> {res.canonical_name or 'Unresolved'}"
+            )
+            print(
+                f"   Method: {res.resolution_method} | Confidence: {res.confidence_score:.2f}"
+            )
+            print(f"   ID:     {res.global_id}\n")
+
+        print("Full JSON Output Payload:")
         print(
-            json.dumps(ner_result.model_dump(mode="json"), indent=2, ensure_ascii=False)
+            json.dumps(
+                final_result.model_dump(mode="json"), indent=2, ensure_ascii=False
+            )
         )

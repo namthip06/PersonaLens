@@ -35,7 +35,7 @@ src/utils/
 
 ---
 
-## 🛠️ Public Functions
+## Public Functions
 
 ### `load_prompt(prompt_name: str) -> dict`
 This is the **only** public interface exposed by the module.

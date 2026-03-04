@@ -1,7 +1,22 @@
-sqlalchemy>=2.0
-psycopg2-binary>=2.9
-python-dotenv>=1.0
-rapidfuzz>=3.0
-requests>=2.31
-trafilatura>=2.0
-datasketch>=1.9
+# Core Persistence & Environment
+sqlalchemy>=2.0.48
+psycopg2-binary>=2.9.11
+python-dotenv>=1.2.2
+
+# Extraction & Data Processing
+trafilatura>=2.0.0
+requests>=2.32.5
+pandas>=2.3.3
+numpy>=1.26.4
+
+# NLP & Entity Resolution
+ollama>=0.6.1
+pydantic>=2.12.5
+rapidfuzz>=3.14.3
+datasketch>=1.9.0
+
+# Dashboard & Visualization
+streamlit>=1.55.0
+plotly>=6.6.0
+pyvis>=0.3.2
+networkx>=3.6.1

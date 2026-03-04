@@ -327,6 +327,7 @@ class Database:
         lang: str = "th",
         published_at: Optional[str] = None,
         is_headline: bool = False,
+        confidence_score: float = 1.0,
     ) -> str:
         """
         Persist one ``AnalyzerResult`` to the database.
@@ -415,7 +416,7 @@ class Database:
                 entity_id,
                 final_score,
                 sentiment_label,
-                1.0,  # confidence placeholder – extend as needed
+                confidence_score,
                 self._now(),
             ),
         )

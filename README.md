@@ -2,6 +2,17 @@
 
 PersonaLens is an AI-powered sentiment intelligence engine that extracts, resolves, and analyzes how public figures are portrayed in unstructured news media using Small Language Models (SLMs).
 
+## Table of Contents
+- [Overview](#overview)
+- [Design Boundary](#design-boundary)
+- [Quick Start](#quick-start)
+- [Screenshots](#screenshots)
+- [Modules](#modules)
+- [How to Install and Run the Project](#how-to-install-and-run-the-project)
+- [How to Use the Project](#how-to-use-the-project)
+- [Mock Data Generator](#mock-data-generator)
+- [Credits](#credits)
+
 ## Overview
 
 PersonaLens bridges the gap between raw unstructured news articles and actionable, structured analytics. It is designed to act as an automated media monitor focusing heavily on public persons, organizations, and locations. 
@@ -21,6 +32,8 @@ The system utilizes an end-to-end pipeline:
 **Challenges & Future Features:**
 One of the core challenges was reigning in the non-deterministic nature of generative AI. Enforcing strict JSON outputs across zero-shot extraction and analysis steps was critical to maintaining a stable pipeline. Looking ahead, future features include real-time distributed web scraper workers, deeper network graph visualizations mapping relationships between public figures, and multi-lingual support tuning.
 
+![Overview](images/Overview.jpg)
+
 ## Design Boundary
 To maintain high precision and an efficient workflow, PersonaLens operates within specific boundaries:
 
@@ -37,16 +50,7 @@ To maintain high precision and an efficient workflow, PersonaLens operates withi
 - **Image/Audio Processing:** The extraction and analysis are strictly limited to unstructured Text data.
 - **Multi-lingual Translation on the Fly:** While it can analyze Thai and English, it does not act as a real-time translator between the two.
 
-## Table of Contents
-- [Overview](#overview)
-- [Design Boundary](#design-boundary)
-- [Quick Start](#quick-start)
-- [Screenshots](#screenshots)
-- [Modules](#modules)
-- [How to Install and Run the Project](#how-to-install-and-run-the-project)
-- [How to Use the Project](#how-to-use-the-project)
-- [Mock Data Generator](#mock-data-generator)
-- [Credits](#credits)
+![Design Boundary](images/Design%20Boundary.jpg)
 
 ## Quick Start
 Get up and running locally quickly via `uv`.
@@ -59,8 +63,11 @@ source .venv/bin/activate
 # 2. Install dependencies (Requires uv)
 uv pip install -r requirements.txt
 
-# 3. Initialize the database (creates all tables + indexes)
-python -m database.init_db
+# 3. Initialize the database (creates all tables + indexes automatically on first use)
+python -c "from database.database import Database; Database()"
+
+# 3.1 (optional) Create mock data
+uv run mockdata/gen_mockdata.py
 
 # 4. Run the Streamlit app
 uv run streamlit run app/app.py
@@ -90,7 +97,7 @@ The application's architecture is segmented into decoupled, distinct modular com
 Follow these steps to set up the PersonaLens development environment locally:
 
 ### Prerequisites
-- Python 3.10+
+- Python 3.11+
 - [uv](https://github.com/astral-sh/uv) (Extremely fast Python package installer)
 - [Ollama](https://ollama.ai/) running locally with an SLM model installed (e.g., `ollama run qwen2.5:7b`).
 
@@ -107,11 +114,10 @@ Follow these steps to set up the PersonaLens development environment locally:
    ```
 
 3. **Initialize the Database:**
-   This command creates the `sqlite.db` file alongside all tables and indexing rules necessary for the project.
+   The SQLite connection automatically manages the creation of tables via internal DDL execution the first time it is instantiated. To force instantiation manually:
    ```bash
-   python -m database.init_db
+   python -c "from database.database import Database; Database()"
    ```
-   *(To wipe and recreate the schema during development, run `python -m database.init_db --drop`)*
 
 4. **Launch the Dashboard:**
    Start the interactive frontend.
@@ -129,6 +135,8 @@ Once the Streamlit dashboard is running locally, navigate to `http://localhost:8
    Once data is ingested, select an extracted person (e.g., Anutin). Review the aliases the engine associated with them, view a chronological sentiment timeline, and open the exact "Chain of Thought" snippet explorer to see *why* the AI assigned a negative or positive score to a specific sentence.
 3. **Executive Dashboard (`app/pages/1_Executive_Dashboard.py`):**
    View macro-level aggregates. Look at the radar charts to identify publisher bias clusters, or check the Leaderboard to see which entities command the highest volume of news mentions.
+
+![How to Use the Project](images/How%20to%20Use%20the%20Project.jpg)
 
 ## Mock Data Generator
 

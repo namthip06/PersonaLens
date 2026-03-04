@@ -8,12 +8,15 @@ trafilatura>=2.0.0
 requests>=2.32.5
 pandas>=2.3.3
 numpy>=1.26.4
+pyyaml>=6.0.2
 
-# NLP & Entity Resolution
+# Entity Resolution
 ollama>=0.6.1
 pydantic>=2.12.5
 rapidfuzz>=3.14.3
 datasketch>=1.9.0
+ddgs>=9.11.1
+langdetect>=1.0.9
 
 # Dashboard & Visualization
 streamlit>=1.55.0

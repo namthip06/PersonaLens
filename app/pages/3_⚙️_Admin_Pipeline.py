@@ -188,6 +188,41 @@ if not _PIPELINE_AVAILABLE:
         "The ingestion form will become active once the engine dependencies are resolved."
     )
 else:
+    import ollama
+
+    try:
+        ollama_res = ollama.list()
+        if hasattr(ollama_res, "models"):
+            _mlist = ollama_res.models
+        elif isinstance(ollama_res, dict) and "models" in ollama_res:
+            _mlist = ollama_res["models"]
+        else:
+            _mlist = []
+
+        avail_models = []
+        for m in _mlist:
+            if hasattr(m, "model"):
+                avail_models.append(m.model)
+            elif isinstance(m, dict) and "name" in m:
+                avail_models.append(m["name"])
+        if not avail_models:
+            avail_models = ["qwen2.5:7b"]
+    except Exception:
+        avail_models = ["qwen2.5:7b"]
+
+    try:
+        default_index = avail_models.index("qwen2.5:7b")
+    except ValueError:
+        default_index = 0
+
+    selected_model_global = st.selectbox(
+        "🧠 Select Language Model",
+        options=avail_models,
+        index=default_index,
+        help="Select the SLM to be used for entity linking and sentiment analysis.",
+        key="global_model_select",
+    )
+
     tab_url, tab_body = st.tabs(["🔗 Ingest by URL", "📝 Ingest Raw Text"])
 
     with tab_url:
@@ -307,6 +342,7 @@ else:
     # ── Pipeline execution ────────────────────────────────────────────────────
     def _run_pipeline(
         article: "NewsArticle",
+        model_name: str,
         log_buffer: list[str],
         log_placeholder=None,
     ) -> str | None:
@@ -427,7 +463,9 @@ else:
 
                 # ── Step 2.1 – extract_entities_with_slm() ───────────────────
                 _banner("STEP 2.1 — extract_entities_with_slm()")
-                ner_result = extract_entities_with_slm(text=clean_body)
+                ner_result = extract_entities_with_slm(
+                    text=clean_body, model_name=model_name
+                )
                 if ner_result is None:
                     log_buffer.append("❌ [Step 2.1] NER returned None — aborting.\n")
                     _refresh()
@@ -451,7 +489,9 @@ else:
                 _refresh()
                 # Both 2.2 & 2.3 execute inside resolve_all_entities;
                 # their engine logger calls flow through _engine_log_capture.
-                linker_result = resolve_all_entities(ner_result, clean_body, session=db)
+                linker_result = resolve_all_entities(
+                    ner_result, clean_body, session=db, model_name=model_name
+                )
                 resolved_count = len(linker_result.resolved)
                 log_buffer.append(
                     f"✅ [Step 2.2–2.3] Resolved {resolved_count} entities.\n"
@@ -462,7 +502,7 @@ else:
 
                 # ── Step 3 – ABSA per entity ──────────────────────────────────
                 _banner("STEP 3 — ABSA Sentiment Analysis (per entity)")
-                slm_client = SLMClient(model="qwen2.5:7b")
+                slm_client = SLMClient(model=model_name)
                 absa_results = []
 
                 for entity in linker_result.resolved:
@@ -576,7 +616,12 @@ else:
         log_lines: list[str] = []
         live_ph = st.empty()
         live_ph.markdown(_render_log(["Starting pipeline…\n"]))
-        aid = _run_pipeline(article_obj, log_lines, log_placeholder=live_ph)
+        aid = _run_pipeline(
+            article_obj,
+            model_name=selected_model_global,
+            log_buffer=log_lines,
+            log_placeholder=live_ph,
+        )
 
         if aid:
             st.toast(f"✅ Article ingested! article_id: {aid[:8]}…", icon="🎉")
@@ -601,7 +646,12 @@ else:
         log_lines2: list[str] = []
         live_ph2 = st.empty()
         live_ph2.markdown(_render_log(["Starting pipeline…\n"]))
-        aid2 = _run_pipeline(article_obj, log_lines2, log_placeholder=live_ph2)
+        aid2 = _run_pipeline(
+            article_obj,
+            model_name=selected_model_global,
+            log_buffer=log_lines2,
+            log_placeholder=live_ph2,
+        )
 
         if aid2:
             st.toast(f"✅ Article ingested! article_id: {aid2[:8]}…", icon="🎉")
